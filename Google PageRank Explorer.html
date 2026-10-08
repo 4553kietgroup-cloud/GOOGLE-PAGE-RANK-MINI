@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PageRank Explorer</title>
+<style>
+:root{--bg:#f4f6fb;--card:#fff;--tx:#1b1f2a;--mu:#667086;--ac:#4c6ef5;--bd:#e0e4ee;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#10131a;--card:#1a1e29;--tx:#e8eaf2;--mu:#98a0b6;--ac:#8ea2ff;--bd:#2a3042}}
+:root[data-theme="dark"]{--bg:#10131a;--card:#1a1e29;--tx:#e8eaf2;--mu:#98a0b6;--ac:#8ea2ff;--bd:#2a3042}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,sans-serif}
+main{max-width:900px;margin:auto;padding:16px 14px 50px}
+h1{margin:.1em 0;font-size:1.5rem}.sub{color:var(--mu);margin:0 0 12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:12px;margin:12px 0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+button{background:var(--ac);color:#fff;border:0;border-radius:9px;padding:8px 13px;font-size:.9rem;cursor:pointer;margin:2px}
+button.g{background:transparent;color:var(--tx);border:1px solid var(--bd)}
+svg{width:100%;height:auto;display:block}
+.hero{font-size:1.15rem;text-align:center;padding:10px;border-radius:12px;background:var(--card);border:1px solid var(--bd)}
+.bars .r{display:flex;align-items:center;gap:8px;margin:5px 0}
+.bars .b{height:20px;border-radius:5px;transition:width .35s}
+.bars .n{width:1.6em;font-weight:700}
+table{border-collapse:collapse;font-size:.8rem;width:100%;text-align:center}td,th{padding:4px;border-bottom:1px solid var(--bd)}
+.scroll{overflow-x:auto}
+input[type=range]{width:100%;accent-color:var(--ac)}
+.mu{color:var(--mu);font-size:.85rem}
+</style></head><body><main>
+<h1>🔗 Google PageRank Explorer</h1>
+<p class="sub">Tap a page, then tap another to add or remove a link. Then watch the importance scores settle into the eigenvector for λ = 1.</p>
+
+<div id="hero" class="hero"></div>
+
+<div class="grid">
+ <div class="card"><b>The web</b> <span class="mu" id="hint">Tap a page to choose where links start.</span>
+  <svg id="web" viewBox="0 0 340 340"></svg>
+  <div>
+   <button class="g" onclick="preset(0)">Benchmark</button>
+   <button class="g" onclick="preset(1)">Ring</button>
+   <button class="g" onclick="preset(2)">Star → C</button>
+   <button class="g" onclick="preset(3)">Random</button>
+  </div>
+ </div>
+ <div class="card"><b>Importance scores</b>
+  <div class="bars" id="bars" style="margin-top:6px"></div>
+  <div class="mu" id="chk"></div>
+  <div style="margin-top:8px">
+   <button onclick="step()">Step ▶</button>
+   <button onclick="togglePlay()" id="pb">Play</button>
+   <button class="g" onclick="resetR()">Reset</button>
+   <button class="g" onclick="solve()">Jump to answer</button>
+  </div>
+  <p class="mu" id="it" style="margin:6px 0 0"></p>
+ </div>
+</div>
+
+<div class="card">
+ <b>Damping d = <span id="dv">0.85</span></b>
+ <input type="range" id="d" min="0" max="0.99" step="0.01" value="0.85" oninput="setD(this.value)">
+ <span class="mu">d is the chance the surfer follows a link; 1 − d is a random jump to any page. Try 0.99: convergence slows down, because the second eigenvalue creeps toward 1.</span>
+</div>
+
+<div class="grid">
+ <div class="card"><b>Convergence of each page</b><svg id="plot" viewBox="0 0 340 190"></svg></div>
+ <div class="card"><b>Google matrix G</b> <span class="mu">(column = from, each column sums to 1)</span>
+  <div class="scroll"><table id="mat"></table></div></div>
+</div>
+
+<div class="card mu">
+<b style="color:var(--tx)">How it works.</b> Each column of the link matrix holds the probabilities of a surfer moving from that page. A page with no links jumps anywhere with equal chance. Mixing in the random jump gives G = d·M + (1−d)/n, whose dominant eigenvalue is exactly 1. Every step multiplies the score vector by G (the power method). The scores stop changing when G·r = r, which is the steady state and the eigenvector for λ = 1.
+</div>
+
+<script>
+const N=5,names="ABCDE".split(""),col=["#4c6ef5","#f76707","#12b886","#e64980","#ae3ec9"];
+const P=[
+ [[0,1,1,0,0],[0,0,1,0,0],[1,0,0,0,0],[0,0,1,0,1],[0,0,1,1,0]],
+ [[0,1,0,0,0],[0,0,1,0,0],[0,0,0,1,0],[0,0,0,0,1],[1,0,0,0,0]],
+ [[0,0,1,0,0],[0,0,1,0,0],[1,0,0,0,0],[0,0,1,0,0],[0,0,1,0,0]]];
+let A=P[0].map(r=>[...r]),d=.85,r,hist,it=0,sel=-1,timer=null;
+const pos=names.map((_,k)=>{const a=(-90+72*k)*Math.PI/180;return[170+115*Math.cos(a),170+115*Math.sin(a)]});
+const $=id=>document.getElementById(id);
+
+function G(){const g=Array.from({length:N},()=>Array(N).fill(0));
+ for(let j=0;j<N;j++){const o=A[j].reduce((a,b)=>a+b,0);
+  for(let i=0;i<N;i++){const m=o?A[j][i]/o:1/N;g[i][j]=d*m+(1-d)/N;}}return g}
+function mul(g,v){return g.map(row=>row.reduce((s,x,j)=>s+x*v[j],0))}
+function resetR(){pause();r=Array(N).fill(1/N);hist=[r];it=0;draw()}
+function step(){r=mul(G(),r);hist.push(r);it++;draw()}
+function solve(){pause();for(let k=0;k<2000;k++){const n=mul(G(),r);const e=n.reduce((s,v,i)=>s+Math.abs(v-r[i]),0);r=n;hist.push(r);it++;if(e<1e-12)break}draw()}
+function pause(){clearInterval(timer);timer=null;$("pb").textContent="Play"}
+function togglePlay(){if(timer)return pause();$("pb").textContent="Pause";timer=setInterval(()=>{step();if(err()<1e-10)pause()},450)}
+function err(){const n=mul(G(),r);return n.reduce((s,v,i)=>s+Math.abs(v-r[i]),0)}
+function setD(v){d=+v;$("dv").textContent=d.toFixed(2);resetR()}
+function preset(k){if(k<3)A=P[k].map(x=>[...x]);else A=Array.from({length:N},(_,i)=>Array.from({length:N},(_,j)=>i!=j&&Math.random()<.4?1:0));sel=-1;resetR()}
+function tap(k){if(sel<0){sel=k;$("hint").textContent="Now tap a page to link "+names[k]+" → it.";}
+ else if(sel==k){sel=-1}else{A[sel][k]^=1;sel=-1;$("hint").textContent="Tap a page to choose where links start.";resetR();return}
+ draw()}
+function rad(k){return 16+r[k]*85}
+
+function draw(){
+ // graph
+ let s='<defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L10 5L0 10z" fill="var(--mu)"/></marker></defs>';
+ for(let i=0;i<N;i++)for(let j=0;j<N;j++)if(A[i][j]){
+  const[p,q]=[pos[i],pos[j]],dx=q[0]-p[0],dy=q[1]-p[1],L=Math.hypot(dx,dy),ux=dx/L,uy=dy/L;
+  const a=[p[0]+ux*(rad(i)+2),p[1]+uy*(rad(i)+2)],b=[q[0]-ux*(rad(j)+7),q[1]-uy*(rad(j)+7)];
+  const c=[(a[0]+b[0])/2-uy*22,(a[1]+b[1])/2+ux*22];
+  s+=`<path d="M${a[0]} ${a[1]}Q${c[0]} ${c[1]} ${b[0]} ${b[1]}" fill="none" stroke="var(--mu)" stroke-width="1.6" opacity=".75" marker-end="url(#ah)"/>`}
+ const best=r.indexOf(Math.max(...r));
+ for(let k=0;k<N;k++)s+=`<g onclick="tap(${k})" style="cursor:pointer"><circle cx="${pos[k][0]}" cy="${pos[k][1]}" r="${rad(k)}" fill="${col[k]}" opacity="${sel==k?1:.88}" stroke="${sel==k?'var(--tx)':k==best?'#fcc419':'none'}" stroke-width="${sel==k?3:4}"/><text x="${pos[k][0]}" y="${pos[k][1]+1}" text-anchor="middle" dominant-baseline="middle" fill="#fff" font-weight="700" font-size="15">${names[k]}</text></g>`;
+ $("web").innerHTML=s;
+ // bars
+ const mx=Math.max(...r);
+ $("bars").innerHTML=r.map((v,k)=>[v,k]).sort((a,b)=>b[0]-a[0]).map(([v,k],i)=>`<div class="r"><span class="n">${names[k]}</span><div class="b" style="width:${v/mx*60}%;background:${col[k]}"></div><span>${(v*100).toFixed(1)}%</span>${i==0?'👑':''}</div>`).join("");
+ const e=err();
+ $("chk").innerHTML=e<1e-6?"✅ G·r = r. This is the steady state (eigenvalue 1).":"‖G·r − r‖ = "+e.toExponential(1)+" (still moving)";
+ $("it").textContent="Iteration "+it;
+ $("hero").innerHTML=it==0?"Press <b>Step</b> or <b>Play</b> to start the power method":`Most important page so far: <b style="color:${col[best]}">Page ${names[best]}</b> with ${(r[best]*100).toFixed(1)}%`;
+ // plot
+ let p='<line x1="30" y1="160" x2="330" y2="160" stroke="var(--bd)"/><line x1="30" y1="10" x2="30" y2="160" stroke="var(--bd)"/>';
+ const T=Math.max(hist.length-1,10),M=Math.max(.01,...hist.flat());
+ for(let k=0;k<N;k++)p+=`<polyline fill="none" stroke="${col[k]}" stroke-width="2" points="${hist.map((h,t)=>(30+t/T*300)+","+(160-h[k]/M*145)).join(" ")}"/>`;
+ p+=`<text x="30" y="178" font-size="10" fill="var(--mu)">0</text><text x="330" y="178" font-size="10" fill="var(--mu)" text-anchor="end">${T} iterations</text>`;
+ $("plot").innerHTML=p;
+ // matrix
+ const g=G();
+ $("mat").innerHTML="<tr><th></th>"+names.map(n=>"<th>"+n+"</th>").join("")+"</tr>"+g.map((row,i)=>"<tr><th>"+names[i]+"</th>"+row.map(v=>`<td style="background:rgba(76,110,245,${Math.min(.65,v*1.1)})">${v.toFixed(2)}</td>`).join("")+"</tr>").join("");
+}
+resetR();
+</script></main></body></html>
